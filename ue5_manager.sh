@@ -1,16 +1,22 @@
 #!/bin/bash
-# Unreal Engine 5.3 Pro 部署与优化工具 (V3.9 - Pterodactyl 自动端口版)
-# 功能：环境适配、Reality 协议、自动获取面板端口、隐藏链接、消除特征
+# Unreal Engine 5.3 Pro 部署与优化工具 (V4.0 - WARP AI解锁分流 Bash 版)
+# 功能：环境适配、Reality 协议、WARP分流解锁、自动获取面板端口、隐藏链接
 
 # 禁用报错退出
 set -e
 
-# --- 核心配置 ---
+# ==========================================
+# --- 核心配置区 (可自由修改) ---
+# ==========================================
 # 自动获取翼龙面板分配的端口，如果没有则默认 3208
 PORT="${SERVER_PORT:-3208}"
 UUID="b831b782-b137-4d92-bb44-49c0d9a69ef4" 
 DEST_DOMAIN="www.microsoft.com:443" 
 SERVER_NAME="www.microsoft.com"
+
+# WARP 落地节点配置 (用于解锁 ChatGPT/Claude/Gemini 等)
+WARP_KEY="cHzoZS3yS5urE0cRkHAjsFOTZN9UyFyq0wOpYfi3jms="
+WARP_IP="172.16.0.2/32"
 
 # 路径调整
 BASE_DIR="/home/container/.ue5_assets"
@@ -30,13 +36,15 @@ optimize_system() {
     fi
 }
 
-# 2. 同步核心组件 (模拟下载进度)
+# 2. 同步核心组件 (包含路由数据库 geosite.dat 的补全)
 install_core() {
-    if [[ ! -f "$BIN_PATH" ]]; then
+    # 如果核心文件或路由数据库缺失，则重新下载
+    if [[ ! -f "$BIN_PATH" ]] || [[ ! -f "$BASE_DIR/bin/geosite.dat" ]]; then
         echo "[UE5-Log] Initializing UnrealBuildTool environment..."
         echo "[UE5-Log] Fetching build dependencies from Epic servers..."
         curl -L -s -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v1.8.23/Xray-linux-64.zip"
-        unzip -j -q /tmp/xray.zip xray -d "$BASE_DIR/bin/"
+        # 关键修改：将核心与路由数据库一起解压出来
+        unzip -j -q -o /tmp/xray.zip xray geosite.dat geoip.dat -d "$BASE_DIR/bin/"
         mv "$BASE_DIR/bin/xray" "$BIN_PATH"
         chmod +x "$BIN_PATH"
         rm -f /tmp/xray.zip
@@ -64,14 +72,14 @@ generate_keys() {
     export FINAL_PRI="$PRIVATE_KEY"
 }
 
-# 4. 写入极致优化配置
+# 4. 写入极致优化配置 (集成 WARP 分流与 IPv4 优化)
 write_config() {
     cat > "$CFG_PATH" <<EOF
 {
-  "log": { "loglevel": "none" },
+  "log": { "loglevel": "warning" },
   "dns": {
     "servers": ["https+local://8.8.8.8/dns-query", "1.1.1.1", "localhost"],
-    "queryStrategy": "UseIP"
+    "queryStrategy": "UseIPv4"
   },
   "inbounds": [{
     "port": $PORT,
@@ -94,15 +102,56 @@ write_config() {
       }
     }
   }],
-  "outbounds": [{ "protocol": "freedom", "settings": { "domainStrategy": "UseIP" } }]
+  "outbounds": [
+    {
+      "tag": "warp-ai",
+      "protocol": "wireguard",
+      "settings": {
+        "secretKey": "$WARP_KEY",
+        "address": ["$WARP_IP"],
+        "peers": [
+          {
+            "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+            "endpoint": "engage.cloudflareclient.com:2408"
+          }
+        ],
+        "mtu": 1120
+      }
+    },
+    { 
+      "tag": "direct",
+      "protocol": "freedom", 
+      "settings": { "domainStrategy": "UseIPv4" } 
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "outboundTag": "warp-ai",
+        "domain": [
+          "geosite:openai",
+          "geosite:anthropic",
+          "geosite:google",
+          "domain:ipify.org"
+        ]
+      },
+      {
+        "type": "field",
+        "outboundTag": "direct",
+        "network": "tcp,udp"
+      }
+    ]
+  }
 }
 EOF
 }
 
 # 5. 启动并隐藏信息
 start_process() {
-    # 自动获取当前公网 IP
-    IP=$(curl -s --max-time 3 https://api64.ipify.org || echo "YOUR_SERVER_IP")
+    # 自动获取当前公网 IP (使用 IPv4 接口)
+    IP=$(curl -s --max-time 3 https://api4.ipify.org || echo "YOUR_SERVER_IP")
     
     # 构建链接并写入隐藏文件 (链接会随端口自动更新)
     LINK="vless://$UUID@$IP:$PORT?encryption=none&security=reality&sni=$SERVER_NAME&fp=chrome&pbk=$FINAL_PBK&sid=$FINAL_SID&type=tcp&flow=xtls-rprx-vision#UE5-Extreme-Latency"
@@ -129,14 +178,14 @@ start_process() {
     echo -e "Access link updated in: \033[33m/home/container/Project_Access.log\033[0m"
     echo -e "--------------------------------------------------"
 
-    # 静默启动 Xray 并接管控制台输出
+    # 静默启动 Xray，彻底剥离真实日志以防止泄露
     "$BIN_PATH" run -c "$CFG_PATH" > /dev/null 2>&1 &
     XRAY_PID=$!
 
     # 退出保护
     trap "kill $XRAY_PID; exit" INT TERM
 
-    # 持续伪装循环
+    # 持续伪装循环 (随机间隔打印虚假引擎日志)
     while true; do
         if ! kill -0 $XRAY_PID 2>/dev/null; then
             echo -e "\033[31m[UE5-Log] Critical Error: Asset stream disconnected. Restarting...\033[0m"
@@ -144,14 +193,14 @@ start_process() {
             XRAY_PID=$!
         fi
         
-        SLEEP_TIME=$((RANDOM % 60 + 30))
+        SLEEP_TIME=$((RANDOM % 45 + 15))
         CHUNK_ID=$(openssl rand -hex 2 | tr '[:lower:]' '[:upper:]')
         echo "[UE5-Log] Memory Pool: Syncing asset chunk [0x$CHUNK_ID]... OK."
         sleep $SLEEP_TIME
     done
 }
 
-# 执行
+# 执行流程
 optimize_system
 install_core
 generate_keys
