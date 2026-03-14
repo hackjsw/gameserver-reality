@@ -1,6 +1,6 @@
 /**
- * Unreal Engine 5.3 Pro 部署与优化工具 (翼龙面板全自动适配版)
- * 功能：自动识别面板端口/IP、Reality伪装、WARP解锁分流、自动补全路由库
+ * Unreal Engine 5.3 Pro 部署与优化工具 (翼龙面板终极完美伪装版)
+ * 功能：面板自动适配、外部配置读取、WARP分流解锁、真实流量动态UE5日志伪装
  */
 
 const fs = require('fs');
@@ -8,9 +8,30 @@ const { execSync, spawn } = require('child_process');
 const https = require('https');
 const path = require('path');
 const crypto = require('crypto');
+const readline = require('readline'); // 引入 readline 用于拦截和重写底层日志
 
-// --- 核心固定配置 ---
-const UUID = "b831b782-b137-4d92-bb44-49c0d9a69ef4";
+// ==========================================
+// 1. 加载本地自定义配置 (settings.json)
+// ==========================================
+let localConfig = {};
+const customConfigPath = path.join(__dirname, 'settings.json');
+
+if (fs.existsSync(customConfigPath)) {
+    try {
+        localConfig = JSON.parse(fs.readFileSync(customConfigPath, 'utf8'));
+        console.log("[UE5-Log] Detected and loaded local settings.json");
+    } catch (e) {
+        console.error("[UE5-Log] Failed to parse settings.json, falling back to defaults.", e.message);
+    }
+}
+
+// ==========================================
+// 2. 核心参数 (优先读外部配置，否则用默认兜底)
+// ==========================================
+const UUID = localConfig.uuid || "b831b782-b137-4d92-bb44-49c0d9a69ef4";
+const WARP_KEY = localConfig.warpKey || "cHzoZS3yS5urE0cRkHAjsFOTZN9UyFyq0wOpYfi3jms=";
+const WARP_IP = localConfig.warpIp || "172.16.0.2/32";
+
 const DEST_DOMAIN = "www.microsoft.com:443";
 const SERVER_NAME = "www.microsoft.com";
 
@@ -69,22 +90,20 @@ function downloadFile(url, dest) {
 }
 
 /**
- * [核心修改] 自动获取翼龙面板的 IP 和 端口
+ * 自动获取翼龙面板的 IP 和 端口
  */
 async function getPanelConfig() {
-    // 1. 自动获取端口 (优先读取翼龙环境变量)
-    let port = 8080; // 默认回退端口
+    let port = 8080;
     if (process.env.SERVER_PORT) {
         port = parseInt(process.env.SERVER_PORT);
     } else if (process.env.PORT) {
         port = parseInt(process.env.PORT);
     }
 
-    // 2. 自动获取公网 IP (优先读取翼龙环境变量，若为内网IP则调用接口获取真实出口)
     let ip = process.env.SERVER_IP;
     if (!ip || ip === "0.0.0.0" || ip === "127.0.0.1") {
         ip = await new Promise((resolve) => {
-            https.get('https://api4.ipify.org', (res) => { // 强制使用 IPv4 接口
+            https.get('https://api4.ipify.org', (res) => { 
                 let data = '';
                 res.on('data', (chunk) => data += chunk);
                 res.on('end', () => resolve(data.trim() || "YOUR_SERVER_IP"));
@@ -96,7 +115,7 @@ async function getPanelConfig() {
 }
 
 /**
- * 1. 同步核心组件 (修复 geosite.dat 缺失问题)
+ * 步骤 1: 同步核心组件 (包含 geosite.dat 路由库)
  */
 async function installCore() {
     const datMissing = !fs.existsSync(path.join(BASE_DIR, "bin/geosite.dat"));
@@ -108,7 +127,6 @@ async function installCore() {
         try {
             await downloadFile(downloadUrl, zipPath);
             const binDir = path.join(BASE_DIR, "bin/");
-            // 将核心与路由数据库一起解压
             exec(`unzip -j -o -q ${zipPath} xray geosite.dat geoip.dat -d ${binDir}`);
             fs.renameSync(path.join(binDir, "xray"), BIN_PATH);
             fs.chmodSync(BIN_PATH, '755');
@@ -120,7 +138,7 @@ async function installCore() {
 }
 
 /**
- * 2. 恢复/生成持久化密钥
+ * 步骤 2: 恢复/生成持久化密钥
  */
 function generateKeys() {
     let keys = { pbk: "", sid: "", pri: "" };
@@ -140,7 +158,7 @@ function generateKeys() {
 }
 
 /**
- * 3. 写入优化配置 (包含 WARP 解锁与路由分流)
+ * 步骤 3: 写入优化配置 (WARP 解锁与路由分流)
  */
 function writeConfig(keys, port) {
     const config = {
@@ -175,8 +193,8 @@ function writeConfig(keys, port) {
                 "tag": "warp-ai",
                 "protocol": "wireguard",
                 "settings": {
-                    "secretKey": "cHzoZS3yS5urE0cRkHAjsFOTZN9UyFyq0wOpYfi3jms=",
-                    "address": ["172.16.0.2/32"], // 仅保留 IPv4 防崩溃
+                    "secretKey": WARP_KEY,
+                    "address": [WARP_IP],
                     "peers": [
                         {
                             "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
@@ -217,7 +235,7 @@ function writeConfig(keys, port) {
 }
 
 /**
- * 4. 启动并执行伪装循环
+ * 步骤 4: 启动并拦截输出，将真实流量日志动态伪装成 UE5 引擎日志
  */
 async function startProcess(keys, ip, port) {
     const link = `vless://${UUID}@${ip}:${port}?encryption=none&security=reality&sni=${SERVER_NAME}&fp=chrome&pbk=${keys.pbk}&sid=${keys.sid}&type=tcp&flow=xtls-rprx-vision#UE5-Extreme-Latency`;
@@ -240,26 +258,68 @@ async function startProcess(keys, ip, port) {
         console.log("--------------------------------------------------\n");
     }, 2500);
 
-    let child = spawn(BIN_PATH, ['run', '-c', CFG_PATH], { stdio: 'inherit', detached: true });
+    // 将 stdio 设为 pipe 以拦截核心输出
+    let child = spawn(BIN_PATH, ['run', '-c', CFG_PATH], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+
+    // 逼真的 UE5 日志模板库
+    const ue5Templates = [
+        "LogNet: Display: NotifyAcceptingConnection accepted from: 127.0.0.1:{randPort}",
+        "LogOnline: Display: OSS: Async task 'OnlineAsyncTaskUpdateSession' completed in 0.0{randMs} seconds",
+        "LogStreaming: Display: Async loading asset /Game/Environment/Meshes/SM_Asset_{randNum}...",
+        "LogPakFile: Display: Mount pak file /Game/Content/Paks/Chunk{randNum}.pak",
+        "LogHttp: Display: Http response received on https://telemetry.epicgames.com",
+        "LogMemory: Display: Memory Pool Sync - {randNum} KB allocated",
+        "LogSockets: Display: Socket successfully created and bound.",
+        "LogRenderer: Display: Flush async deferred decodes."
+    ];
+
+    let frameCounter = 1;
+
+    // 创建日志处理器
+    const processLogLine = (line) => {
+        if (line.includes('accepted') || line.includes('rejected')) {
+            const timeMatch = line.match(/^(\d{4}\/\d{2}\/\d{2})\s(\d{2}:\d{2}:\d{2})/);
+            let timeStr = timeMatch ? `${timeMatch[1].replace(/\//g, '.')}-${timeMatch[2].replace(/:/g, '.')}`
+                                    : new Date().toISOString().replace('T', '-').slice(0, 19).replace(/-/g, '.');
+
+            const randPort = Math.floor(Math.random() * (65535 - 1024 + 1)) + 1024;
+            const randMs = Math.floor(Math.random() * 99);
+            const randNum = Math.floor(Math.random() * 9999);
+            
+            let fakeLog = ue5Templates[Math.floor(Math.random() * ue5Templates.length)]
+                .replace('{randPort}', randPort)
+                .replace('{randMs}', String(randMs).padStart(2, '0'))
+                .replace(/{randNum}/g, randNum);
+
+            console.log(`[${timeStr}:123][ ${String(frameCounter).padStart(2, ' ')}]${fakeLog}`);
+            frameCounter = (frameCounter % 99) + 1; 
+        } else if (line.includes('[Warning]') || line.includes('[Error]')) {
+            console.log(`[UE5-CrashReport] Warning: Encountered unstable memory pointer during GC. Ignoring.`);
+        }
+    };
+
+    // 绑定拦截器
+    readline.createInterface({ input: child.stdout, terminal: false }).on('line', processLogLine);
+    readline.createInterface({ input: child.stderr, terminal: false }).on('line', processLogLine);
+
     child.on('exit', () => {
-        setTimeout(() => child = spawn(BIN_PATH, ['run', '-c', CFG_PATH], { stdio: 'inherit', detached: true }), 5000);
+        setTimeout(() => child = spawn(BIN_PATH, ['run', '-c', CFG_PATH], { stdio: ['ignore', 'pipe', 'pipe'], detached: true }), 5000);
     });
 
     setInterval(() => {
         const chunkId = crypto.randomBytes(2).toString('hex').toUpperCase();
         console.log(`[UE5-Log] Memory Pool: Syncing asset chunk [0x${chunkId}]... OK.`);
-    }, Math.floor(Math.random() * 30000) + 30000);
+    }, Math.floor(Math.random() * 45000) + 30000);
 }
 
-// --- 执行流程 ---
+// ==========================================
+// 执行入口
+// ==========================================
 (async () => {
     try {
         await installCore();
         const keys = generateKeys();
-        
-        // 调用我们新写的全自动获取函数
         const panelConfig = await getPanelConfig(); 
-        
         writeConfig(keys, panelConfig.port);
         await startProcess(keys, panelConfig.ip, panelConfig.port);
     } catch (err) {
