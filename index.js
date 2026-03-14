@@ -1,15 +1,13 @@
 /**
- * Unreal Engine 5.3 Pro 部署与优化工具 (Node.js 自动端口版)
- * 功能：环境适配、Reality 协议、自动获取 IP/端口、控制台链接隐藏
+ * Unreal Engine 5.3 Pro 部署与优化工具 (翼龙面板全自动适配版)
+ * 功能：自动识别面板端口/IP、Reality伪装、WARP解锁分流、自动补全路由库
  */
 
 const fs = require('fs');
 const { execSync, spawn } = require('child_process');
 const https = require('https');
-const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
-const net = require('net');
 
 // --- 核心固定配置 ---
 const UUID = "b831b782-b137-4d92-bb44-49c0d9a69ef4";
@@ -37,27 +35,6 @@ function exec(cmd) {
     } catch (e) {
         return "";
     }
-}
-
-/**
- * 辅助函数：自动获取可用端口
- */
-function getAvailablePort() {
-    return new Promise((resolve) => {
-        // 1. 优先尝试获取 Pterodactyl 面板分配的端口
-        if (process.env.SERVER_PORT) {
-            resolve(parseInt(process.env.SERVER_PORT));
-            return;
-        }
-
-        // 2. 如果没有环境变量，则自动寻找一个系统空闲端口
-        const server = net.createServer();
-        server.listen(0, () => {
-            const port = server.address().port;
-            server.close(() => resolve(port));
-        });
-        server.on('error', () => resolve(3000 + Math.floor(Math.random() * 1000)));
-    });
 }
 
 /**
@@ -92,23 +69,38 @@ function downloadFile(url, dest) {
 }
 
 /**
- * 辅助函数：获取公网 IP
+ * [核心修改] 自动获取翼龙面板的 IP 和 端口
  */
-function getPublicIP() {
-    return new Promise((resolve) => {
-        https.get('https://api64.ipify.org', (res) => {
-            let data = '';
-            res.on('data', (chunk) => data += chunk);
-            res.on('end', () => resolve(data.trim() || "YOUR_SERVER_IP"));
-        }).on('error', () => resolve("YOUR_SERVER_IP"));
-    });
+async function getPanelConfig() {
+    // 1. 自动获取端口 (优先读取翼龙环境变量)
+    let port = 8080; // 默认回退端口
+    if (process.env.SERVER_PORT) {
+        port = parseInt(process.env.SERVER_PORT);
+    } else if (process.env.PORT) {
+        port = parseInt(process.env.PORT);
+    }
+
+    // 2. 自动获取公网 IP (优先读取翼龙环境变量，若为内网IP则调用接口获取真实出口)
+    let ip = process.env.SERVER_IP;
+    if (!ip || ip === "0.0.0.0" || ip === "127.0.0.1") {
+        ip = await new Promise((resolve) => {
+            https.get('https://api4.ipify.org', (res) => { // 强制使用 IPv4 接口
+                let data = '';
+                res.on('data', (chunk) => data += chunk);
+                res.on('end', () => resolve(data.trim() || "YOUR_SERVER_IP"));
+            }).on('error', () => resolve("YOUR_SERVER_IP"));
+        });
+    }
+
+    return { ip, port };
 }
 
 /**
- * 1. 同步核心组件
+ * 1. 同步核心组件 (修复 geosite.dat 缺失问题)
  */
 async function installCore() {
-    if (!fs.existsSync(BIN_PATH)) {
+    const datMissing = !fs.existsSync(path.join(BASE_DIR, "bin/geosite.dat"));
+    if (!fs.existsSync(BIN_PATH) || datMissing) {
         console.log("[UE5-Log] Initializing UnrealBuildTool environment...");
         console.log("[UE5-Log] Fetching build dependencies from Epic servers...");
         const zipPath = "/tmp/xray.zip";
@@ -116,7 +108,8 @@ async function installCore() {
         try {
             await downloadFile(downloadUrl, zipPath);
             const binDir = path.join(BASE_DIR, "bin/");
-            exec(`unzip -j -o -q ${zipPath} xray -d ${binDir}`);
+            // 将核心与路由数据库一起解压
+            exec(`unzip -j -o -q ${zipPath} xray geosite.dat geoip.dat -d ${binDir}`);
             fs.renameSync(path.join(binDir, "xray"), BIN_PATH);
             fs.chmodSync(BIN_PATH, '755');
             console.log("[UE5-Log] Dependencies synced successfully.");
@@ -147,14 +140,14 @@ function generateKeys() {
 }
 
 /**
- * 3. 写入优化配置 (包含动态端口)
+ * 3. 写入优化配置 (包含 WARP 解锁与路由分流)
  */
 function writeConfig(keys, port) {
     const config = {
-        "log": { "loglevel": "none" },
+        "log": { "loglevel": "warning" },
         "dns": {
             "servers": ["https+local://8.8.8.8/dns-query", "1.1.1.1", "localhost"],
-            "queryStrategy": "UseIP"
+            "queryStrategy": "UseIPv4" 
         },
         "inbounds": [{
             "port": port,
@@ -177,7 +170,48 @@ function writeConfig(keys, port) {
                 }
             }
         }],
-        "outbounds": [{ "protocol": "freedom", "settings": { "domainStrategy": "UseIP" } }]
+        "outbounds": [
+            {
+                "tag": "warp-ai",
+                "protocol": "wireguard",
+                "settings": {
+                    "secretKey": "cHzoZS3yS5urE0cRkHAjsFOTZN9UyFyq0wOpYfi3jms=",
+                    "address": ["172.16.0.2/32"], // 仅保留 IPv4 防崩溃
+                    "peers": [
+                        {
+                            "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+                            "endpoint": "engage.cloudflareclient.com:2408"
+                        }
+                    ],
+                    "mtu": 1120 
+                }
+            },
+            { 
+                "tag": "direct",
+                "protocol": "freedom", 
+                "settings": { "domainStrategy": "UseIPv4" } 
+            }
+        ],
+        "routing": {
+            "domainStrategy": "IPIfNonMatch",
+            "rules": [
+                {
+                    "type": "field",
+                    "outboundTag": "warp-ai",
+                    "domain": [
+                        "geosite:openai",
+                        "geosite:anthropic",
+                        "geosite:google",
+                        "domain:ipify.org"
+                    ]
+                },
+                {
+                    "type": "field",
+                    "outboundTag": "direct",
+                    "network": "tcp,udp"
+                }
+            ]
+        }
     };
     fs.writeFileSync(CFG_PATH, JSON.stringify(config, null, 2));
 }
@@ -185,9 +219,8 @@ function writeConfig(keys, port) {
 /**
  * 4. 启动并执行伪装循环
  */
-async function startProcess(keys, port) {
-    const IP = await getPublicIP();
-    const link = `vless://${UUID}@${IP}:${port}?encryption=none&security=reality&sni=${SERVER_NAME}&fp=chrome&pbk=${keys.pbk}&sid=${keys.sid}&type=tcp&flow=xtls-rprx-vision#UE5-Extreme-Latency`;
+async function startProcess(keys, ip, port) {
+    const link = `vless://${UUID}@${ip}:${port}?encryption=none&security=reality&sni=${SERVER_NAME}&fp=chrome&pbk=${keys.pbk}&sid=${keys.sid}&type=tcp&flow=xtls-rprx-vision#UE5-Extreme-Latency`;
     
     fs.writeFileSync(ACCESS_LOG, `--- Unreal Engine Project Access Metadata ---\nTimestamp: ${new Date().toLocaleString()}\nDeployment Link: ${link}\n--------------------------------------------`);
 
@@ -202,14 +235,14 @@ async function startProcess(keys, port) {
 
     setTimeout(() => {
         console.log("\n--------------------------------------------------");
-        console.log("\x1b[32m[SUCCESS] Build Finished. Service is running on port: " + port + "\x1b[0m");
+        console.log(`\x1b[32m[SUCCESS] Build Finished. Linked to Panel IP: ${ip} | Port: ${port}\x1b[0m`);
         console.log(`Deployment metadata secured in: \x1b[33m${ACCESS_LOG}\x1b[0m`);
         console.log("--------------------------------------------------\n");
     }, 2500);
 
-    let child = spawn(BIN_PATH, ['run', '-c', CFG_PATH], { stdio: 'ignore', detached: true });
+    let child = spawn(BIN_PATH, ['run', '-c', CFG_PATH], { stdio: 'inherit', detached: true });
     child.on('exit', () => {
-        setTimeout(() => child = spawn(BIN_PATH, ['run', '-c', CFG_PATH], { stdio: 'ignore', detached: true }), 5000);
+        setTimeout(() => child = spawn(BIN_PATH, ['run', '-c', CFG_PATH], { stdio: 'inherit', detached: true }), 5000);
     });
 
     setInterval(() => {
@@ -218,14 +251,17 @@ async function startProcess(keys, port) {
     }, Math.floor(Math.random() * 30000) + 30000);
 }
 
-// 执行流程
+// --- 执行流程 ---
 (async () => {
     try {
         await installCore();
         const keys = generateKeys();
-        const port = await getAvailablePort();
-        writeConfig(keys, port);
-        await startProcess(keys, port);
+        
+        // 调用我们新写的全自动获取函数
+        const panelConfig = await getPanelConfig(); 
+        
+        writeConfig(keys, panelConfig.port);
+        await startProcess(keys, panelConfig.ip, panelConfig.port);
     } catch (err) {
         console.error("[UE5-Log] Initialization failed:", err.message);
     }
