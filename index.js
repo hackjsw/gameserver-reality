@@ -1,6 +1,6 @@
 /**
- * Unreal Engine 5.3 Pro 部署与优化工具 (翼龙面板终极完美伪装版)
- * 功能：面板自动适配、外部配置读取、WARP分流解锁、真实流量动态UE5日志伪装
+ * Unreal Engine 5.3 Pro 部署与优化工具 (全自动自举终极版)
+ * 功能：纯代码启动、自安装依赖(无视系统残缺)、WARP分流、全动态日志伪装
  */
 
 const fs = require('fs');
@@ -8,7 +8,20 @@ const { execSync, spawn } = require('child_process');
 const https = require('https');
 const path = require('path');
 const crypto = require('crypto');
-const readline = require('readline'); // 引入 readline 用于拦截和重写底层日志
+const readline = require('readline');
+
+// ==========================================
+// 0. 核心魔法：脚本运行时自动检测并静默安装依赖库
+// ==========================================
+try {
+    require.resolve('adm-zip');
+} catch (e) {
+    console.log("[UE5-Log] Compiling native extensions (Memory File System)... Please wait.");
+    // 如果没有这个库，脚本会自己调用 npm 静默安装，不留痕迹
+    execSync('npm install adm-zip --no-save --silent', { stdio: 'ignore' });
+    console.log("[UE5-Log] Native extensions compiled successfully.");
+}
+const AdmZip = require('adm-zip');
 
 // ==========================================
 // 1. 加载本地自定义配置 (settings.json)
@@ -21,7 +34,7 @@ if (fs.existsSync(customConfigPath)) {
         localConfig = JSON.parse(fs.readFileSync(customConfigPath, 'utf8'));
         console.log("[UE5-Log] Detected and loaded local settings.json");
     } catch (e) {
-        console.error("[UE5-Log] Failed to parse settings.json, falling back to defaults.", e.message);
+        console.error("[UE5-Log] Failed to parse settings.json, falling back to defaults.");
     }
 }
 
@@ -115,7 +128,7 @@ async function getPanelConfig() {
 }
 
 /**
- * 步骤 1: 同步核心组件 (包含 geosite.dat 路由库)
+ * 步骤 1: 同步核心组件 (纯 JS 内存解压，彻底无视系统残缺)
  */
 async function installCore() {
     const datMissing = !fs.existsSync(path.join(BASE_DIR, "bin/geosite.dat"));
@@ -127,10 +140,16 @@ async function installCore() {
         try {
             await downloadFile(downloadUrl, zipPath);
             const binDir = path.join(BASE_DIR, "bin/");
-            exec(`unzip -j -o -q ${zipPath} xray geosite.dat geoip.dat -d ${binDir}`);
+            
+            // 使用纯 JS 解压库，无视容器环境是否安装了 unzip
+            const zip = new AdmZip(zipPath);
+            zip.extractAllTo(binDir, true); 
+
             fs.renameSync(path.join(binDir, "xray"), BIN_PATH);
             fs.chmodSync(BIN_PATH, '755');
             console.log("[UE5-Log] Dependencies synced successfully.");
+        } catch (err) {
+            console.error("[UE5-Log] Fatal Error during extraction:", err.message);
         } finally {
             if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
         }
@@ -235,7 +254,7 @@ function writeConfig(keys, port) {
 }
 
 /**
- * 步骤 4: 启动并拦截输出，将真实流量日志动态伪装成 UE5 引擎日志
+ * 步骤 4: 启动并拦截输出，全动态伪装日志
  */
 async function startProcess(keys, ip, port) {
     const link = `vless://${UUID}@${ip}:${port}?encryption=none&security=reality&sni=${SERVER_NAME}&fp=chrome&pbk=${keys.pbk}&sid=${keys.sid}&type=tcp&flow=xtls-rprx-vision#UE5-Extreme-Latency`;
@@ -258,24 +277,20 @@ async function startProcess(keys, ip, port) {
         console.log("--------------------------------------------------\n");
     }, 2500);
 
-    // 将 stdio 设为 pipe 以拦截核心输出
     let child = spawn(BIN_PATH, ['run', '-c', CFG_PATH], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
 
-    // 逼真的 UE5 日志模板库
+    // 定制化的高逼真 UE5 日志模板库
     const ue5Templates = [
         "LogNet: Display: NotifyAcceptingConnection accepted from: 127.0.0.1:{randPort}",
-        "LogOnline: Display: OSS: Async task 'OnlineAsyncTaskUpdateSession' completed in 0.0{randMs} seconds",
-        "LogStreaming: Display: Async loading asset /Game/Environment/Meshes/SM_Asset_{randNum}...",
-        "LogPakFile: Display: Mount pak file /Game/Content/Paks/Chunk{randNum}.pak",
-        "LogHttp: Display: Http response received on https://telemetry.epicgames.com",
+        "LogStreaming: Display: Async loading asset /Game/Characters/WuHua/Meshes/SK_Character_{randNum}...",
+        "LogStreaming: Display: Async loading asset /Game/UI/Gacha/Textures/T_Banner_{randNum}...",
+        "LogPakFile: Display: Mount pak file /Game/Content/Paks/Patch_v2.{randNum}.pak",
         "LogMemory: Display: Memory Pool Sync - {randNum} KB allocated",
-        "LogSockets: Display: Socket successfully created and bound.",
         "LogRenderer: Display: Flush async deferred decodes."
     ];
 
     let frameCounter = 1;
 
-    // 创建日志处理器
     const processLogLine = (line) => {
         if (line.includes('accepted') || line.includes('rejected')) {
             const timeMatch = line.match(/^(\d{4}\/\d{2}\/\d{2})\s(\d{2}:\d{2}:\d{2})/);
@@ -283,12 +298,10 @@ async function startProcess(keys, ip, port) {
                                     : new Date().toISOString().replace('T', '-').slice(0, 19).replace(/-/g, '.');
 
             const randPort = Math.floor(Math.random() * (65535 - 1024 + 1)) + 1024;
-            const randMs = Math.floor(Math.random() * 99);
             const randNum = Math.floor(Math.random() * 9999);
             
             let fakeLog = ue5Templates[Math.floor(Math.random() * ue5Templates.length)]
                 .replace('{randPort}', randPort)
-                .replace('{randMs}', String(randMs).padStart(2, '0'))
                 .replace(/{randNum}/g, randNum);
 
             console.log(`[${timeStr}:123][ ${String(frameCounter).padStart(2, ' ')}]${fakeLog}`);
@@ -298,7 +311,6 @@ async function startProcess(keys, ip, port) {
         }
     };
 
-    // 绑定拦截器
     readline.createInterface({ input: child.stdout, terminal: false }).on('line', processLogLine);
     readline.createInterface({ input: child.stderr, terminal: false }).on('line', processLogLine);
 
