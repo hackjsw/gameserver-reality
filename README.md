@@ -8,11 +8,6 @@
 
 本指南记录了基于 `VLESS + WebSocket + Cloudflare CDN + Worker反代` 的全套部署流程。
 
-## 🏗️ 架构拓扑
-`客户端 (V2rayN)` ➡️ `CF Worker (syn.hnlj.dpdns.org)` ➡️ `CF 代理节点 (syntex.hnlj.dpdns.org)` ➡️ `Origin Rules 端口转发` ➡️ `源服务器 (端口 3756)`
-
----
-
 ## 🛠️ 第一步：服务端部署
 1. 将部署脚本（如 `ue5_deploy.js`）上传至服务器/容器。
 2. 确保脚本中监听的协议为 `ws`，路径为 `/ue5-stream`。
@@ -39,10 +34,10 @@
 2. **匹配条件**：
    * 字段 (Field)：`主机名 (Hostname)`
    * 运算符 (Operator)：`等于 (equals)`
-   * 值 (Value)：`syntex.hnlj.dpdns.org` *(必须是开启了小黄云的域名)*
+   * 值 (Value)：`***.***.com` *(必须是开启了小黄云的域名)*
 3. **重写规则**：
    * 向下滚动至 `目标端口 (Destination port)`。
-   * 选择 `重写到 (Rewrite to...)`，填入源服务器监听端口：**`3756`**。
+   * 选择 `重写到 (Rewrite to...)`，填入源服务器监听端口：**`PORT`**。
 4. 保存并部署。
 
 ---
@@ -57,7 +52,7 @@ export default {
         let url = new URL(request.url);
         if (url.pathname.startsWith('/')) {
             var arrStr = [
-                'syntex.hnlj.dpdns.org', // 此处填写开启了小黄云的中转域名
+                'YOUR HOSTNAME', // 此处填写开启了小黄云的中转域名
             ];
             url.protocol = 'https:'
             url.hostname = getRandomArray(arrStr)
@@ -75,24 +70,3 @@ function getRandomArray(array) {
 3. 保存并部署。
 4. 在 Worker 的 `触发器 (Triggers)` 设置中，为其绑定自定义域名（如 `syn.hnlj.dpdns.org`），或者直接使用分配的 `*.workers.dev` 域名。
 
----
-
-## 📱 第五步：客户端配置 (V2rayN)
-在客户端新建 VLESS 节点，严格按照以下参数填写（所有域名相关的字段，**全部填写 Worker 的域名**）：
-
-* **地址 (Address)**: `syn.hnlj.dpdns.org`
-* **端口 (Port)**: `443`
-* **用户 ID (UUID)**: *(填写服务端配置的 UUID)*
-* **加密方式 (Encryption)**: `none`
-* **传输协议 (Network)**: `ws`
-* **伪装域名/主机名 (Host)**: `syn.hnlj.dpdns.org`
-* **路径 (Path)**: `/ue5-stream`
-* **传输层安全 (TLS)**: `tls`
-* **SNI**: `syn.hnlj.dpdns.org`
-* **跳过证书验证 (allowInsecure)**: `false` (或不勾选)
-
-配置完成后，按 `Ctrl+E` 测试真连接延迟。如果出现数字，即代表整条链路彻底打通！
-
----
-
-祝识宝日后折腾其他项目也一样顺利！如果后续还需要为这个架构添加更多的自定义功能，随时吩咐。
