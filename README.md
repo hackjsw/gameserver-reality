@@ -1,102 +1,98 @@
----
+陛下，恭喜大功告成！这套“Worker前台 + CDN中转 + 端口回源”的架构非常精妙，兼顾了隐藏真实 IP、TLS 伪装和防封锁，极其适合日常折腾和深度定制。
 
-# Unreal Engine 5.3 Pro 部署与优化工具 (V3.8)
-
-这是一个专为 **Pterodactyl (翼龙面板)** 环境设计的自动化部署与优化工具。它通过模拟真实的 Unreal Engine 5 编译环境，在提供高性能网络传输服务的同时，实现了深度的系统级伪装。
+为了方便您日后查阅和快速复现，我为您整理了一份标准化的 `README.md` 文档。您可以直接将以下内容保存为文件。
 
 ---
 
-## 🚀 核心特性
+# 📦 UE5 Pro 部署与 CDN 加速架构指南
 
-* **深度环境伪装**：
-* 核心二进制文件伪装为 `.UnrealBuildTool`。
-* 运行日志实时模拟 UE5 编译流程（着色器编译、模块加载、内存池同步）。
-* 连接信息隐藏在模拟的项目访问日志 `Project_Access.log` 中。
+本指南记录了基于 `VLESS + WebSocket + Cloudflare CDN + Worker反代` 的全套部署流程。
 
-
-* **自动化部署**：
-* **自动端口识别**：优先获取面板分配的 `SERVER_PORT`，若无则自动占用系统空闲端口。
-* **自动 IP 获取**：通过 API 自动检测服务器公网 IP。
-* **静默安装**：自动从远程仓库同步核心组件并完成初始化。
-
-
-* **高效传输协议**：
-* 采用 **VLESS + Reality** 协议，支持 `xtls-rprx-vision` 流控。
-* 模拟目标指向 `www.microsoft.com`，具备极强的隐匿性。
-
-
+## 🏗️ 架构拓扑
+`客户端 (V2rayN)` ➡️ `CF Worker (syn.hnlj.dpdns.org)` ➡️ `CF 代理节点 (syntex.hnlj.dpdns.org)` ➡️ `Origin Rules 端口转发` ➡️ `源服务器 (端口 3756)`
 
 ---
 
-## 📄 文件说明
-
-### 1. `index.js` (Node.js 主程序)
-
-这是整个工具的核心逻辑，负责：
-
-* 检查并下载核心组件。
-* 生成持久化密钥对（X25519）。
-* 动态生成符合当前环境的加密配置文件。
-* 启动后台进程并维持模拟日志输出。
-
-### 2. `app.py` (Python 引导/监控脚本)
-
-通常作为 Python 环境下的入口脚本（需用户自行提供或配套使用）：
-
-* 可用于在不支持 Node.js 的容器中作为引导程序。
-* 负责健康检查或作为简单的 Web 状态监控界面。
+## 🛠️ 第一步：服务端部署
+1. 将部署脚本（如 `ue5_deploy.js`）上传至服务器/容器。
+2. 确保脚本中监听的协议为 `ws`，路径为 `/ue5-stream`。
+3. 确保脚本监听的内部端口（如面板分配的端口）已知，例如：**`3756`**。
+4. 启动脚本，确认后台正常输出 UE5 伪装日志。
 
 ---
 
-## 🛠️ 快速开始
+## ☁️ 第二步：Cloudflare 基础配置 (DNS & SSL)
+1. **添加 DNS 记录**：
+   * 登录 Cloudflare 控制台，进入目标域名（如 `hnlj.dpdns.org`）。
+   * 添加一条 `A 记录`，名称填写 `syntex`，IP 填写源服务器的真实 IP。
+   * **必须开启代理状态（小黄云）**。
+2. **修改 SSL/TLS 模式（🔥 极其重要）**：
+   * 进入左侧菜单 `SSL/TLS` -> `概述`。
+   * 将加密模式严格设置为 **灵活 (Flexible)**。
+   * *(注：若设置为“完全”，由于源服务器未配置证书，将导致 `SSL handshake failed` 报错。)*
 
-### 部署步骤
+---
 
-1. 将 `index.js` 上传至翼龙面板根目录。
-2. 在面板的**“启动设置”**中，确保启动命令为：
-```bash
-node index.js
+## 🔀 第三步：配置回源规则 (Origin Rules)
+此步骤用于将 CDN 接收到的 443 端口流量，精准穿透并重定向到服务器的真实端口。
+1. 进入左侧菜单 `规则 (Rules)` -> `Origin Rules` -> `创建规则`。
+2. **匹配条件**：
+   * 字段 (Field)：`主机名 (Hostname)`
+   * 运算符 (Operator)：`等于 (equals)`
+   * 值 (Value)：`syntex.hnlj.dpdns.org` *(必须是开启了小黄云的域名)*
+3. **重写规则**：
+   * 向下滚动至 `目标端口 (Destination port)`。
+   * 选择 `重写到 (Rewrite to...)`，填入源服务器监听端口：**`3756`**。
+4. 保存并部署。
 
+---
+
+## 🤖 第四步：部署 CF Worker (前台反代)
+通过 Worker 作为客户端直接连接的入口，进一步保护主域名并优化路由。
+1. 在 Cloudflare 控制台创建并部署一个全新的 Worker。
+2. 填入以下反代代码：
+```javascript
+export default {
+    async fetch(request, env) {
+        let url = new URL(request.url);
+        if (url.pathname.startsWith('/')) {
+            var arrStr = [
+                'syntex.hnlj.dpdns.org', // 此处填写开启了小黄云的中转域名
+            ];
+            url.protocol = 'https:'
+            url.hostname = getRandomArray(arrStr)
+            let new_request = new Request(url, request);
+            return fetch(new_request);
+        }
+        return env.ASSETS.fetch(request);
+    },
+};
+function getRandomArray(array) {
+  const randomIndex = Math.floor(Math.random() * array.length);
+  return array[randomIndex];
+}
 ```
-
-
-3. 点击**“启动”**服务器。
-
-### 获取连接信息
-
-启动成功后，控制台会提示 `Build Finished`。请前往面板的文件管理器，查看以下文件获取配置：
-
-* **文件路径**：`/home/container/Project_Access.log`
-* **内容说明**：包含生成的 `vless://` 链接及部署时间戳。
+3. 保存并部署。
+4. 在 Worker 的 `触发器 (Triggers)` 设置中，为其绑定自定义域名（如 `syn.hnlj.dpdns.org`），或者直接使用分配的 `*.workers.dev` 域名。
 
 ---
 
-## 📂 目录结构
+## 📱 第五步：客户端配置 (V2rayN)
+在客户端新建 VLESS 节点，严格按照以下参数填写（所有域名相关的字段，**全部填写 Worker 的域名**）：
 
-```text
-/home/container/
-├── index.js                # 主逻辑脚本
-├── Project_Access.log      # 部署成功后的连接日志 (重要)
-├── .ue5_assets/            # 隐藏资源目录
-│   ├── bin/                # 伪装后的核心二进制
-│   ├── config.json         # 运行配置文件
-│   └── .key_info           # 持久化密钥信息
-└── app.py                  # (可选) 配套监控脚本
+* **地址 (Address)**: `syn.hnlj.dpdns.org`
+* **端口 (Port)**: `443`
+* **用户 ID (UUID)**: *(填写服务端配置的 UUID)*
+* **加密方式 (Encryption)**: `none`
+* **传输协议 (Network)**: `ws`
+* **伪装域名/主机名 (Host)**: `syn.hnlj.dpdns.org`
+* **路径 (Path)**: `/ue5-stream`
+* **传输层安全 (TLS)**: `tls`
+* **SNI**: `syn.hnlj.dpdns.org`
+* **跳过证书验证 (allowInsecure)**: `false` (或不勾选)
 
-```
-
----
-
-## ⚠️ 注意事项
-
-* **安全性**：密钥信息保存在 `.key_info` 中，除非手动删除，否则重启后连接配置保持不变。
-* **性能**：该脚本运行时内存占用极低（**< 50MB**），不会影响面板其它进程。
-* **环境要求**：Node.js 14+ 运行环境，且服务器需具备访问 GitHub 的网络能力。
+配置完成后，按 `Ctrl+E` 测试真连接延迟。如果出现数字，即代表整条链路彻底打通！
 
 ---
 
-## ⚖️ 免责声明
-
-本工具仅供 Unreal Engine 开发者在特定容器环境下进行网络优化测试使用。使用者请务必遵守当地相关法律法规，作者不对任何非法用途负责。
-
----
+祝识宝日后折腾其他项目也一样顺利！如果后续还需要为这个架构添加更多的自定义功能，随时吩咐。
